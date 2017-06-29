@@ -24,7 +24,7 @@ type Type struct {
 	Fields        []Field
 	Interfaces    []Type
 	PossibleTypes []Type
-	//EnumValues []EnumValue
+	EnumValues    []EnumValue
 	//InputFields []InputField
 	OfType *Type
 }
@@ -98,14 +98,12 @@ type __InputValue {
 }
 */
 
-/*
-type __EnumValue {
-  name: String!
-  description: String
-  isDeprecated: Boolean!
-  deprecationReason: String
+type EnumValue struct {
+	Name              string
+	Description       *string
+	IsDeprecated      bool
+	DeprecationReason *string
 }
-*/
 
 /*
 type __Directive {

@@ -25,8 +25,8 @@ type TypeConfig struct {
 	Type   string
 	Fields map[string]FieldConfig
 
-	// File into which the definition of a scalar should be written.
-	// Should be empty string for a predeclared name and for an imported type.
+	// File into which the definition of an object should be written.
+	// Should be empty for predeclared names and imported types.
 	File string
 }
 
@@ -44,7 +44,7 @@ type ScalarConfig struct {
 	Type string
 
 	// File into which the definition of a scalar should be written.
-	// Should be empty string for a predeclared name.
+	// Should be empty for predeclared names.
 	File string
 }
 
@@ -111,6 +111,10 @@ var defaultScalars = map[string]ScalarConfig{
 	"ID":      {Type: "string"},
 }
 
+func getTypeConfig(config *Config, name string) TypeConfig {
+	return config.Types[name]
+}
+
 func getScalarConfig(config *Config, name string) ScalarConfig {
 	cfg, ok := config.Scalars[name]
 	if ok {
@@ -160,6 +164,15 @@ func getName(config *Config, typ schema.Type) string {
 	return getNameNullable(config, typ, true)
 }
 
+func getFieldType(config *Config, typ schema.Type, field schema.Field) string {
+	cfg := getTypeConfig(config, *typ.Name)
+	fieldCfg := cfg.Fields[field.Name]
+	if fieldCfg.Type != "" {
+		return fieldCfg.Type
+	}
+	return getName(config, field.Type)
+}
+
 func getFile(config *Config, typ schema.Type) string {
 	name := getNameNullable(config, typ, false)
 	if isPredeclaredType(name) {
@@ -177,8 +190,7 @@ func getFile(config *Config, typ schema.Type) string {
 		// ...
 		return "types.go"
 	case typekind.Enum:
-		n := strings.ToLower(name)
-		return path.Join(n, n+".go")
+		return "enums.go"
 	case typekind.Interface:
 		return "interfaces.go"
 	case typekind.Union:
@@ -207,7 +219,8 @@ func renderObject(config *Config, typ schema.Type) string {
 		if field.Description != nil {
 			buf.WriteString(renderComment("\t// ", *field.Description))
 		}
-		fmt.Fprintf(&buf, "\t%s %v\n", strings.Title(field.Name), getName(config, field.Type))
+		fieldType := getFieldType(config, typ, field)
+		fmt.Fprintf(&buf, "\t%s %v\n", strings.Title(field.Name), fieldType)
 	}
 	buf.WriteString("}\n")
 	return buf.String()
@@ -273,6 +286,19 @@ func renderEnum(config *Config, typ schema.Type) string {
 		buf.WriteString(renderComment("// ", *typ.Description))
 	}
 	fmt.Fprintf(&buf, "type %s string\n", name)
+	if len(typ.EnumValues) > 0 {
+		fmt.Fprintf(&buf, "\nconst (\n")
+		for i, val := range typ.EnumValues {
+			if i != 0 {
+				buf.WriteString("\n")
+			}
+			if val.Description != nil {
+				buf.WriteString(renderComment("\t// ", *val.Description))
+			}
+			fmt.Fprintf(&buf, "\t%s_%s %s = %q\n", name, val.Name, name, val.Name)
+		}
+		buf.WriteString(")\n")
+	}
 	return buf.String()
 }
 
