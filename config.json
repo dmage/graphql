@@ -1,0 +1,17 @@
+{
+    "types": {
+        "Query": {
+            "fields": {
+                "relay": {"type": "*Query"}
+            }
+        }
+    },
+    "scalars": {
+        "URI":             {"type": "string"},
+        "DateTime":        {"type": "string"},
+        "HTML":            {"type": "string"},
+        "GitObjectID":     {"type": "string"},
+        "GitTimestamp":    {"type": "string"},
+        "X509Certificate": {"type": "string"}
+    }
+}
