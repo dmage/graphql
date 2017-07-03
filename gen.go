@@ -153,6 +153,8 @@ func getNameNullable(config *Config, typ schema.Type, nullable bool) string {
 		return getNameNullable(config, *typ.OfType, false)
 	case typekind.List:
 		return "[]" + getNameNullable(config, *typ.OfType, true)
+	case typekind.Interface:
+		prefix = ""
 	}
 	if typ.Name == nil {
 		panic(fmt.Errorf("unable to get name for type %#+v", typ))
@@ -205,7 +207,7 @@ func renderComment(prefix, s string) string {
 	return fmt.Sprintf("%s%s\n", prefix, strings.Replace(s, "\n", "\n"+prefix, -1))
 }
 
-func renderObject(config *Config, typ schema.Type) string {
+func renderObject(config *Config, typ schema.Type) ([]string, string) {
 	var buf bytes.Buffer
 	if typ.Description != nil {
 		buf.WriteString(renderComment("// ", *typ.Description))
@@ -220,10 +222,44 @@ func renderObject(config *Config, typ schema.Type) string {
 			buf.WriteString(renderComment("\t// ", *field.Description))
 		}
 		fieldType := getFieldType(config, typ, field)
-		fmt.Fprintf(&buf, "\t%s %v\n", strings.Title(field.Name), fieldType)
+		fmt.Fprintf(&buf, "\tfield_%s %s `json:\"%s\"`\n", field.Name, fieldType, field.Name)
 	}
 	buf.WriteString("}\n")
-	return buf.String()
+	for _, field := range typ.Fields {
+		fieldType := getFieldType(config, typ, field)
+		fmt.Fprintf(&buf, "\nfunc (o %s) %s() %s {\n", name, strings.Title(field.Name), fieldType)
+		fmt.Fprintf(&buf, "\treturn o.field_%s\n", field.Name)
+		fmt.Fprintf(&buf, "}\n")
+	}
+	fmt.Fprintf(&buf, "\nfunc (o *%s) UnmarshalJSON(data []byte) error {\n", name)
+	fmt.Fprintf(&buf, "\tvar v struct {\n")
+	for _, field := range typ.Fields {
+		if field.Type.Kind == typekind.Interface {
+			fmt.Fprintf(&buf, "\t\tfield_%s json.RawMessage `json:\"%s\"`\n", field.Name, field.Name)
+		} else {
+			fieldType := getFieldType(config, typ, field)
+			fmt.Fprintf(&buf, "\t\tfield_%s %s `json:\"%s\"`\n", field.Name, fieldType, field.Name)
+		}
+	}
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "\terr := json.Unmarshal(data, &v)\n")
+	fmt.Fprintf(&buf, "\tif err != nil {\n")
+	fmt.Fprintf(&buf, "\t\treturn err\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	for _, field := range typ.Fields {
+		if field.Type.Kind == typekind.Interface {
+			fieldType := getFieldType(config, typ, field)
+			fmt.Fprintf(&buf, "\to.field_%s, err = %s_UnmarshalJSON(v.field_%s)\n", field.Name, fieldType, field.Name)
+			fmt.Fprintf(&buf, "\tif err != nil {\n")
+			fmt.Fprintf(&buf, "\t\treturn err\n")
+			fmt.Fprintf(&buf, "\t}\n")
+		} else {
+			fmt.Fprintf(&buf, "\to.field_%s = v.field_%s\n", field.Name, field.Name)
+		}
+	}
+	fmt.Fprintf(&buf, "\treturn nil\n")
+	fmt.Fprintf(&buf, "}\n")
+	return []string{"encoding/json"}, buf.String()
 }
 
 func renderScalar(config *Config, typ schema.Type) string {
@@ -242,15 +278,17 @@ func renderScalar(config *Config, typ schema.Type) string {
 	return buf.String()
 }
 
-func renderInterface(config *Config, typ schema.Type) string {
+func renderInterface(config *Config, typ schema.Type) ([]string, string) {
 	name := getNameNullable(config, typ, false)
 
 	var buf bytes.Buffer
 	if typ.Description != nil {
 		buf.WriteString(renderComment("// ", *typ.Description))
 	}
-	if len(typ.Fields) != 0 {
-		fmt.Fprintf(&buf, "type %s interface{\n", name)
+	if len(typ.Fields) == 0 {
+		fmt.Fprintf(&buf, "type %s interface{}\n", name)
+	} else {
+		fmt.Fprintf(&buf, "type %s interface {\n", name)
 		for fieldNo, field := range typ.Fields {
 			if fieldNo != 0 {
 				buf.WriteString("\n")
@@ -261,10 +299,34 @@ func renderInterface(config *Config, typ schema.Type) string {
 			fmt.Fprintf(&buf, "\t%s() %s\n", strings.Title(field.Name), getName(config, field.Type))
 		}
 		buf.WriteString("}\n")
-	} else {
-		fmt.Fprintf(&buf, "type %s interface{}\n", name)
 	}
-	return buf.String()
+	fmt.Fprintf(&buf, "\ntype Untyped_%s map[string]interface{}\n", name)
+	for _, field := range typ.Fields {
+		fmt.Fprintf(&buf, "\nfunc (m Untyped_%s) %s() %s {\n", name, strings.Title(field.Name), getName(config, field.Type))
+		fmt.Fprintf(&buf, "\treturn m[%q].(%s)\n", field.Name, getName(config, field.Type))
+		fmt.Fprintf(&buf, "}\n")
+	}
+	fmt.Fprintf(&buf, "\nfunc %s_UnmarshalJSON(data []byte) (%s, error) {\n", name, name)
+	fmt.Fprintf(&buf, "\tvar t struct {\n\t\ttypename string `json:\"__typename\"`\n\t}\n")
+	fmt.Fprintf(&buf, "\terr := json.Unmarshal(data, &t)\n")
+	fmt.Fprintf(&buf, "\tif err != nil {\n")
+	fmt.Fprintf(&buf, "\t\treturn nil, err\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "\tswitch t.typename {\n")
+	for _, pt := range typ.PossibleTypes {
+		fmt.Fprintf(&buf, "\tcase %q:\n", *pt.Name)
+		fmt.Fprintf(&buf, "\t\tvar v %s\n", getNameNullable(config, pt, false))
+		fmt.Fprintf(&buf, "\t\terr = json.Unmarshal(data, &v)\n")
+		fmt.Fprintf(&buf, "\t\treturn v, err\n")
+	}
+	fmt.Fprintf(&buf, "\tcase \"\":\n")
+	fmt.Fprintf(&buf, "\t\tvar v Untyped_%s\n", name)
+	fmt.Fprintf(&buf, "\t\terr = json.Unmarshal(data, &v)\n")
+	fmt.Fprintf(&buf, "\t\treturn v, err\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "\treturn nil, fmt.Errorf(\"unexpected __typename for interface %%s: %%s\", %q, t.typename)\n", name)
+	fmt.Fprintf(&buf, "}\n")
+	return []string{"encoding/json", "fmt"}, buf.String()
 }
 
 func renderUnion(config *Config, typ schema.Type) string {
@@ -336,8 +398,8 @@ func main() {
 
 		switch typ.Kind {
 		case typekind.Object:
-			chunk := renderObject(&config, typ)
-			of.Add(nil, chunk)
+			imports, chunk := renderObject(&config, typ)
+			of.Add(imports, chunk)
 		case typekind.Scalar:
 			chunk := renderScalar(&config, typ)
 			of.Add(nil, chunk)
@@ -345,8 +407,8 @@ func main() {
 			chunk := renderEnum(&config, typ)
 			of.Add(nil, chunk)
 		case typekind.Interface:
-			chunk := renderInterface(&config, typ)
-			of.Add(nil, chunk)
+			imports, chunk := renderInterface(&config, typ)
+			of.Add(imports, chunk)
 		case typekind.Union:
 			chunk := renderUnion(&config, typ)
 			of.Add(nil, chunk)
@@ -362,13 +424,20 @@ func main() {
 			log.Fatal(err)
 		}
 
-		f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE, 0666)
+		f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		fmt.Fprintf(f, "package %s\n", of.Package)
-		// TODO: imports
+		if len(of.Imports) > 0 {
+			f.WriteString("\n")
+			f.WriteString("import (\n")
+			for _, im := range of.Imports {
+				fmt.Fprintf(f, "\t%q\n", im)
+			}
+			f.WriteString(")\n")
+		}
 		for _, chunk := range of.Chunks {
 			f.WriteString("\n")
 			f.WriteString(chunk)
