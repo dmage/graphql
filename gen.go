@@ -235,10 +235,10 @@ func renderObject(config *Config, typ schema.Type) ([]string, string) {
 	fmt.Fprintf(&buf, "\tvar v struct {\n")
 	for _, field := range typ.Fields {
 		if field.Type.Kind == typekind.Interface {
-			fmt.Fprintf(&buf, "\t\tfield_%s json.RawMessage `json:\"%s\"`\n", field.Name, field.Name)
+			fmt.Fprintf(&buf, "\t\tField_%s json.RawMessage `json:\"%s\"`\n", field.Name, field.Name)
 		} else {
 			fieldType := getFieldType(config, typ, field)
-			fmt.Fprintf(&buf, "\t\tfield_%s %s `json:\"%s\"`\n", field.Name, fieldType, field.Name)
+			fmt.Fprintf(&buf, "\t\tField_%s %s `json:\"%s\"`\n", field.Name, fieldType, field.Name)
 		}
 	}
 	fmt.Fprintf(&buf, "\t}\n")
@@ -249,12 +249,14 @@ func renderObject(config *Config, typ schema.Type) ([]string, string) {
 	for _, field := range typ.Fields {
 		if field.Type.Kind == typekind.Interface {
 			fieldType := getFieldType(config, typ, field)
-			fmt.Fprintf(&buf, "\to.field_%s, err = %s_UnmarshalJSON(v.field_%s)\n", field.Name, fieldType, field.Name)
-			fmt.Fprintf(&buf, "\tif err != nil {\n")
-			fmt.Fprintf(&buf, "\t\treturn err\n")
+			fmt.Fprintf(&buf, "\tif len(v.Field_%s) > 0 {\n", field.Name)
+			fmt.Fprintf(&buf, "\t\to.field_%s, err = %s_UnmarshalJSON(v.Field_%s)\n", field.Name, fieldType, field.Name)
+			fmt.Fprintf(&buf, "\t\tif err != nil {\n")
+			fmt.Fprintf(&buf, "\t\t\treturn err\n")
+			fmt.Fprintf(&buf, "\t\t}\n")
 			fmt.Fprintf(&buf, "\t}\n")
 		} else {
-			fmt.Fprintf(&buf, "\to.field_%s = v.field_%s\n", field.Name, field.Name)
+			fmt.Fprintf(&buf, "\to.field_%s = v.Field_%s\n", field.Name, field.Name)
 		}
 	}
 	fmt.Fprintf(&buf, "\treturn nil\n")
@@ -307,12 +309,12 @@ func renderInterface(config *Config, typ schema.Type) ([]string, string) {
 		fmt.Fprintf(&buf, "}\n")
 	}
 	fmt.Fprintf(&buf, "\nfunc %s_UnmarshalJSON(data []byte) (%s, error) {\n", name, name)
-	fmt.Fprintf(&buf, "\tvar t struct {\n\t\ttypename string `json:\"__typename\"`\n\t}\n")
+	fmt.Fprintf(&buf, "\tvar t struct {\n\t\tTypename string `json:\"__typename\"`\n\t}\n")
 	fmt.Fprintf(&buf, "\terr := json.Unmarshal(data, &t)\n")
 	fmt.Fprintf(&buf, "\tif err != nil {\n")
 	fmt.Fprintf(&buf, "\t\treturn nil, err\n")
 	fmt.Fprintf(&buf, "\t}\n")
-	fmt.Fprintf(&buf, "\tswitch t.typename {\n")
+	fmt.Fprintf(&buf, "\tswitch t.Typename {\n")
 	for _, pt := range typ.PossibleTypes {
 		fmt.Fprintf(&buf, "\tcase %q:\n", *pt.Name)
 		fmt.Fprintf(&buf, "\t\tvar v %s\n", getNameNullable(config, pt, false))
@@ -324,7 +326,7 @@ func renderInterface(config *Config, typ schema.Type) ([]string, string) {
 	fmt.Fprintf(&buf, "\t\terr = json.Unmarshal(data, &v)\n")
 	fmt.Fprintf(&buf, "\t\treturn v, err\n")
 	fmt.Fprintf(&buf, "\t}\n")
-	fmt.Fprintf(&buf, "\treturn nil, fmt.Errorf(\"unexpected __typename for interface %%s: %%s\", %q, t.typename)\n", name)
+	fmt.Fprintf(&buf, "\treturn nil, fmt.Errorf(\"unexpected __typename for interface %%s: %%s\", %q, t.Typename)\n", name)
 	fmt.Fprintf(&buf, "}\n")
 	return []string{"encoding/json", "fmt"}, buf.String()
 }
